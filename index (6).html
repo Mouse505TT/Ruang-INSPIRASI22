@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Isla Lite — Pixel Solo (Durango-like Lite)</title>
+<style>
+  :root{--bg:#071124;--panel:rgba(10,15,25,.9);--accent:#60a5fa}
+  html,body{height:100%;margin:0;background:var(--bg);color:#e6eef8;font-family:Inter,system-ui,Segoe UI,Roboto,Arial}
+  #game{display:block;margin:12px auto;background:#0b1724;image-rendering:pixelated;box-shadow:0 10px 30px rgba(0,0,0,.6);width:960px;height:600px}
+  .hud{position:fixed;left:12px;top:12px;background:var(--panel);padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,.04)}
+  .controls{position:fixed;left:12px;bottom:12px;background:var(--panel);padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,.04);font-size:13px}
+  .panel{position:fixed;right:12px;top:12px;background:var(--panel);padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,.04);width:360px;max-width:92vw;display:none}
+  button.btn{background:var(--accent);color:#fff;padding:6px 8px;border-radius:8px;border:0;cursor:pointer}
+  .statbar{width:220px;height:10px;background:rgba(255,255,255,.06);border-radius:8px;overflow:hidden}
+  .statbar > i{display:block;height:100%}
+  .small{font-size:12px;opacity:.9}
+  .inv-row{display:flex;justify-content:space-between;margin:6px 0}
+  .center{display:flex;align-items:center;gap:8px}
+</style>
+</head>
+<body>
+<canvas id="game" width="960" height="600" tabindex="0"></canvas>
+
+<div class="hud">
+  <div style="display:flex;gap:12px;align-items:center">
+    <div>
+      <div style="font-weight:700">HP <span id="hpTxt">100</span></div>
+      <div class="statbar"><i id="hpBar" style="width:100%;background:linear-gradient(90deg,#22c55e,#10b981)"></i></div>
+    </div>
+    <div>
+      <div style="font-weight:700">Stamina <span id="stTxt">100</span></div>
+      <div class="statbar"><i id="stBar" style="width:100%;background:linear-gradient(90deg,#f59e0b,#f97316)"></i></div>
+    </div>
+    <div>
+      <div style="font-weight:700">Lapar <span id="hgTxt">0</span></div>
+      <div class="statbar"><i id="hgBar" style="width:0%;background:linear-gradient(90deg,#ef4444,#f43f5e)"></i></div>
+    </div>
+  </div>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <button class="btn" id="btnInv">Inventori (I)</button>
+    <button class="btn" id="btnCraft">Craft (C)</button>
+    <button class="btn" id="btnHelp">Bantuan (?)</button>
+    <button class="btn" id="btnSave">Simpan</button>
+    <button class="btn" id="btnReset">Reset</button>
+  </div>
+</div>
+
+<div class="controls">
+  <div style="font-weight:700">Kontrol</div>
+  <div>Gerak: ⬆️⬇️⬅️➡️ (Panah)</div>
+  <div>Serang / Interaksi: E</div>
+  <div>Buka Inventori: I • Craft: C</div>
+</div>
+
+<div class="panel" id="invPanel">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <strong>Inventori</strong><button class="btn" id="closeInv">Tutup</button>
+  </div>
+  <div id="invList" style="margin-top:8px"></div>
+</div>
+
+<div class="panel" id="craftPanel">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <strong>Crafting</strong><button class="btn" id="closeCraft">Tutup</button>
+  </div>
+  <div id="craftList" style="margin-top:8px"></div>
+</div>
+
+<div class="panel" id="helpPanel" style="width:420px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <strong>Bantuan</strong><button class="btn" id="closeHelp">Tutup</button>
+  </div>
+  <div style="margin-top:8px">
+    <p><strong>Tujuan:</strong> Hidupkan, kumpulkan bahan, craft senjata & bangunan, bertahan dari dinos.</p>
+    <p><strong>Kontrol utama:</strong> Panah = gerak, E = interaksi/serang, I = inventori, C = crafting</p>
+  </div>
+</div>
+
+<script>
+/* --- Isla Lite: Singleplayer Pixel Mode (full features) ---
+   - Arrow keys movement
+   - Interact/attack (E) to gather/attack
+   - Loot drops & pickup
+   - Crafting (stone_axe, spear, campfire, wall, berry snack)
+   - Place campfire/wall
+   - Pixel procedural sprites with simple animations
+   - Save/load via localStorage
+*/
+
+// canvas setup
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const TILE = 40;
+
+// player
+const player = {
+  x: W/2, y: H/2, r:10, dir:1,
+  hp:100, stamina:100, hunger:0,
+  inv: {wood:0,stone:0,fiber:0,berries:0,meat:0,stone_axe:0,spear:0,campfire:0,wood_wall:0,berry_snack:0},
+  equipped:null, placeMode:null
+};
+
+// world entities: trees, rocks, bushes, dinos, campfires, walls
+const ents = [];
+const gatherables = {
+  tree:{hp:18,drops:[['wood',2,4]]},
+  rock:{hp:20,drops:[['stone',2,4]]},
+  bush:{hp:8,drops:[['fiber',2,4],['berries',1,2]]}
+};
+
+// spawn functions
+function addEnt(type,x,y){ const e={type,x,y,hp:(gatherables[type]?.hp)||30,fuel:0}; if(type==='dino'){e.hp=40;e.speed=1.2;} if(type==='campfire') e.fuel=80; if(type==='wall') e.hp=50; ents.push(e); return e; }
+function spawnResources(){
+  for(let i=0;i<90;i++) addEnt('tree', rand(60,W-60), rand(60,H-60));
+  for(let i=0;i<60;i++) addEnt('rock', rand(60,W-60), rand(60,H-60));
+  for(let i=0;i<70;i++) addEnt('bush', rand(60,W-60), rand(60,H-60));
+  for(let i=0;i<8;i++) addEnt('dino', rand(80,W-80), rand(80,H-80));
+}
+spawnResources();
+
+// utils
+function rand(a,b){ return Math.random()*(b-a)+a; }
+function rint(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+
+// input
+const keys = {};
+window.addEventListener('keydown', e=>{ keys[e.key] = true; if(e.key==='i' || e.key==='I') toggle(invPanel); if(e.key==='c' || e.key==='C') toggle(craftPanel); if(e.key==='?') toggle(helpPanel); if(e.key==='e' || e.key==='E') interact(); });
+window.addEventListener('keyup', e=>{ keys[e.key] = false; });
+
+// UI elements
+const invPanel = document.getElementById('invPanel');
+const craftPanel = document.getElementById('craftPanel');
+const helpPanel = document.getElementById('helpPanel');
+const invList = document.getElementById('invList');
+const craftList = document.getElementById('craftList');
+document.getElementById('btnInv').onclick=()=>toggle(invPanel);
+document.getElementById('closeInv').onclick=()=>toggle(invPanel,false);
+document.getElementById('btnCraft').onclick=()=>toggle(craftPanel);
+document.getElementById('closeCraft').onclick=()=>toggle(craftPanel,false);
+document.getElementById('btnHelp').onclick=()=>toggle(helpPanel);
+document.getElementById('closeHelp').onclick=()=>toggle(helpPanel,false);
+document.getElementById('btnSave').onclick=saveGame;
+document.getElementById('btnReset').onclick=()=>{ if(confirm('Reset progress?')){ localStorage.removeItem('ISLA_SOLO'); location.reload(); } };
+
+function toggle(el, show){
+  if(show === false) el.style.display='none';
+  else el.style.display = (el.style.display==='block' ? 'none' : 'block');
+}
+
+// items & crafting
+function addItem(id,qty=1){ player.inv[id] = (player.inv[id]||0) + qty; renderInventory(); }
+function hasItems(cost){ return Object.entries(cost).every(([k,v])=> (player.inv[k]||0) >= v ); }
+function consume(cost){ for(const [k,v] of Object.entries(cost)) player.inv[k]-=v; }
+
+const recipes = [
+  {id:'stone_axe', name:'Kapak Batu', cost:{wood:3,stone:3}, desc:'+ lebih cepat tebang pohon'},
+  {id:'spear', name:'Tombak', cost:{wood:2,stone:2,fiber:2}, desc:'Senjata jarak dekat sederhana'},
+  {id:'campfire', name:'Campfire', cost:{wood:5,stone:2}, desc:'Tempat memasak & menghangatkan (Place)'},
+  {id:'wood_wall', name:'Pagar Kayu', cost:{wood:6}, desc:'Bangunan pertahanan (Place)'},
+  {id:'berry_snack', name:'Camilan Berry', cost:{berries:3}, desc:'Kurangi lapar -15'}
+];
+
+function renderInventory(){
+  invList.innerHTML = '';
+  for(const [k,v] of Object.entries(player.inv)){
+    if(v<=0) continue;
+    const row = document.createElement('div'); row.className='inv-row';
+    const pretty = k.replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
+    row.innerHTML = `<div class="small">${pretty}</div><div class="small">${v}</div>`;
+    const btn = document.createElement('button'); btn.className='btn small'; btn.style.marginLeft='8px';
+    if(k==='campfire' || k==='wood_wall'){ btn.textContent='Place'; btn.onclick=()=>{ player.placeMode = k; toggle(invPanel,false); showToast('Klik di tanah untuk menaruh '+pretty); }; }
+    else if(k==='berry_snack'){ btn.textContent='Use'; btn.onclick=()=>{ player.hunger = Math.max(0, player.hunger-15); player.inv[k]--; showToast('Makan: Lapar -15'); renderInventory(); updateHUD(); }; }
+    else if(k==='stone_axe' || k==='spear'){ btn.textContent = (player.equipped===k?'Unequip':'Equip'); btn.onclick=()=>{ player.equipped = (player.equipped===k? null : k); renderInventory(); }; }
+    else { btn.textContent='-'; btn.disabled=true; }
+    row.appendChild(btn);
+    invList.appendChild(row);
+  }
+}
+
+function renderCraft(){
+  craftList.innerHTML = '';
+  for(const r of recipes){
+    const row = document.createElement('div'); row.className='inv-row';
+    const need = Object.entries(r.cost).map(([k,v])=>`${k} x${v}`).join(', ');
+    row.innerHTML = `<div style="flex:1"><div style="font-weight:700">${r.name}</div><div class="small">${need}</div><div class="small">${r.desc}</div></div>`;
+    const b = document.createElement('button'); b.className='btn'; b.textContent='Craft'; b.disabled = !hasItems(r.cost);
+    b.onclick = ()=>{ if(!hasItems(r.cost)) return; consume(r.cost); addItem(r.id,1); showToast('Crafted '+r.name); renderCraft(); renderInventory(); };
+    row.appendChild(b);
+    craftList.appendChild(row);
+  }
+}
+
+// toast
+const toastEl = document.createElement('div'); toastEl.style.position='fixed'; toastEl.style.left='50%'; toastEl.style.transform='translateX(-50%)'; toastEl.style.bottom='14px'; toastEl.style.background='rgba(0,0,0,.7)'; toastEl.style.padding='8px 12px'; toastEl.style.borderRadius='10px'; toastEl.style.display='none'; document.body.appendChild(toastEl);
+function showToast(t){ toastEl.textContent=t; toastEl.style.display='block'; clearTimeout(showToast.t); showToast.t = setTimeout(()=>toastEl.style.display='none',1400); }
+
+// interaction
+function interact(){
+  // find nearest entity within reach
+  const reach = 34;
+  let target = null, dmin=1e9;
+  for(const e of ents){
+    const d = Math.hypot(e.x - player.x, e.y - player.y);
+    if(d < reach && d < dmin){ target = e; dmin = d; }
+  }
+  if(!target){
+    showToast('Tidak ada objek dekat.');
+    return;
+  }
+  if(target.type==='dino'){
+    // attack
+    const dmg = player.equipped==='spear' ? 12 : 6;
+    target.hp -= dmg;
+    spawnFloat('-'+dmg, target.x, target.y-12, '#ffdede');
+    if(target.hp<=0){
+      // drop loot
+      const qty = rint(1,3);
+      addGroundItem(target.x, target.y, 'meat', qty);
+      ents.splice(ents.indexOf(target),1);
+      showToast('Dino tumbang! +'+qty+' meat');
+      // spawn replacement
+      addEnt('dino', rand(80,W-80), rand(80,H-80));
+    }
+    player.stamina = Math.max(0, player.stamina-8);
+    return;
+  }
+  if(gatherables[target.type]){
+    // gather
+    let mult = 1;
+    if(target.type==='tree' && player.equipped==='stone_axe') mult = 1.6;
+    const hit = rint(3,6) * mult;
+    target.hp -= hit;
+    spawnFloat('-'+Math.round(hit), target.x, target.y-8, '#fff3bf');
+    if(target.hp<=0){
+      for(const d of gatherables[target.type].drops){
+        const [id,a,b] = d;
+        addGroundItem(target.x+rand(-6,6), target.y+rand(-6,6), id, rint(a,b));
+      }
+      ents.splice(ents.indexOf(target),1);
+      showToast('Kumpulkan bahan berhasil!');
+    } else showToast('Mengumpulkan...');
+    player.stamina = Math.max(0, player.stamina-5);
+    return;
+  }
+  if(target.type==='campfire'){
+    if(player.hunger>0){ player.hunger = Math.max(0, player.hunger-10); showToast('Makan & menghangat. Lapar -10'); }
+    target.fuel = Math.min(120, (target.fuel||0) + 20);
+    return;
+  }
+  showToast('Tidak bisa berinteraksi.');
+}
+
+// ground items (loot)
+const groundItems = [];
+function addGroundItem(x,y,type,qty){ groundItems.push({x,y,type,qty}); }
+
+// pickup
+function pickupNearby(){
+  for(const it of groundItems.slice()){
+    if(Math.hypot(it.x-player.x, it.y-player.y) < 18){
+      player.inv[it.type] = (player.inv[it.type]||0) + it.qty;
+      spawnFloat('+'+it.qty+' '+it.type, player.x, player.y-14, '#c8ffd8');
+      groundItems.splice(groundItems.indexOf(it),1);
+      renderInventory(); updateHUD();
+    }
+  }
+}
+
+// floating texts
+const floats = [];
+function spawnFloat(text,x,y,color){ floats.push({text,x,y,color,life:60,vy:-0.4}); }
+
+// HUD update
+function updateHUD(){
+  document.getElementById('hpTxt').textContent = Math.round(player.hp);
+  document.getElementById('stTxt').textContent = Math.round(player.stamina);
+  document.getElementById('hgTxt').textContent = Math.round(player.hunger);
+  document.getElementById('hpBar').style.width = clamp(player.hp,0,100)+'%';
+  document.getElementById('stBar').style.width = clamp(player.stamina,0,100)+'%';
+  document.getElementById('hgBar').style.width = clamp(player.hunger,0,100)+'%';
+}
+
+// save/load
+function saveGame(){ const data = {player, ents: ents.map(e=>({type:e.type,x:e.x,y:e.y,hp:e.hp,fuel:e.fuel||0})), groundItems}; localStorage.setItem('ISLA_SOLO', JSON.stringify(data)); showToast('Disimpan ke localStorage'); }
+function loadGame(){ const s = localStorage.getItem('ISLA_SOLO'); if(!s) return; try{ const d = JSON.parse(s); Object.assign(player, d.player); ents.length=0; for(const e of d.ents) addEnt(e.type,e.x,e.y).hp = e.hp; groundItems.length=0; for(const g of (d.groundItems||[])) groundItems.push(g); showToast('Progress dimuat'); }catch(e){ console.warn(e); } }
+loadGame();
+
+// simple AI for dinos
+function updateEntities(){
+  for(const e of ents){
+    if(e.type==='dino'){
+      // find nearest player (only one)
+      const dx = player.x - e.x, dy = player.y - e.y;
+      const d = Math.hypot(dx,dy);
+      if(d < 160){
+        e.x += (dx/d) * e.speed * 0.9;
+        e.y += (dy/d) * e.speed * 0.9;
+        if(d < 24){
+          player.hp = Math.max(0, player.hp - 0.12);
+          spawnFloat('-0.1', player.x, player.y-12, '#ffdede');
+        }
+      } else {
+        e.x += Math.cos(e.x*0.01 + e.y*0.02) * 0.3;
+        e.y += Math.sin(e.y*0.01 + e.x*0.02) * 0.3;
+      }
+    }
+  }
+}
+
+// player movement and camera (no camera, single screen)
+function updatePlayer(){
+  let dx=0, dy=0;
+  if(keys['ArrowUp']) dy -= 1;
+  if(keys['ArrowDown']) dy += 1;
+  if(keys['ArrowLeft']) { dx -= 1; player.dir = -1; }
+  if(keys['ArrowRight']) { dx += 1; player.dir = 1; }
+  const mag = Math.hypot(dx,dy) || 1;
+  if(dx||dy){ player.x += (dx/mag) * 2.4; player.y += (dy/mag) * 2.4; player.stamina = Math.max(0, player.stamina - 0.07); }
+  else { player.stamina = Math.min(100, player.stamina + 0.12); }
+  player.x = clamp(player.x, 24, W-24); player.y = clamp(player.y, 24, H-24);
+
+  // hunger & hp effects
+  player.hunger = clamp(player.hunger + 0.02, 0, 100);
+  if(player.hunger >= 95) player.hp = Math.max(0, player.hp - 0.04);
+  if(player.hp <= 0){ // respawn
+    spawnFloat('Pingsan! Respawn', player.x, player.y, '#ffdede');
+    player.hp = 80; player.hunger = 40; player.x = W/2; player.y = H/2;
+  }
+}
+
+// pixel sprite drawing (procedural) with simple animation frames
+let tick = 0;
+function drawPlayerSprite(x,y,scale,color,dir){
+  const s = scale;
+  // torso
+  ctx.fillStyle = color; ctx.fillRect(x-6*s, y-6*s, 12*s, 12*s);
+  // head
+  ctx.fillStyle = shade(color, -18); ctx.fillRect(x-5*s, y-14*s, 10*s, 8*s);
+  // eye
+  ctx.fillStyle = '#000'; ctx.fillRect(x+2*s, y-12*s, 2*s, 2*s);
+  // legs animation
+  const step = Math.floor(tick/8)%4;
+  const legOffset = (step%2===0)?1:-1;
+  ctx.fillStyle = shade(color, -6);
+  ctx.fillRect(x-5*s, y+4*s+legOffset, 4*s, 2*s);
+  ctx.fillRect(x+1*s, y+4*s-legOffset, 4*s, 2*s);
+  // weapon/arm
+  ctx.fillStyle = (player.equipped==='spear')? '#d97706' : '#8b5cf6';
+  if(dir >= 0) ctx.fillRect(x+6*s, y-2*s, 8*s, 2*s); else ctx.fillRect(x-14*s, y-2*s, 8*s, 2*s);
+}
+
+// mob sprite
+function drawDino(x,y){
+  ctx.fillStyle = '#9a3412'; ctx.fillRect(x-12, y-8, 24, 16);
+  ctx.fillStyle = '#000'; ctx.fillRect(x+4, y-6, 3,3);
+}
+
+// main draw
+function draw(){
+  tick++;
+  ctx.clearRect(0,0,W,H);
+  // background tiles (simple)
+  for(let y=0;y<H;y+=20){
+    ctx.fillStyle = (y%40===0)? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.01)';
+    ctx.fillRect(0,y,W,1);
+  }
+
+  // draw entities: trees, rocks, bushes
+  for(const e of ents){
+    if(e.type==='tree'){
+      // trunk
+      ctx.fillStyle = '#7c4a10'; ctx.fillRect(e.x-4,e.y-2,8,10);
+      // foliage pixels
+      const cols = ['#14532d','#166534','#16a34a'];
+      for(let oy=-14;oy<0;oy+=6){
+        for(let ox=-12;ox<=12;ox+=6){
+          ctx.fillStyle = cols[(Math.abs(ox+oy/2)/6)%cols.length|0];
+          ctx.fillRect(e.x+ox, e.y+oy, 6,6);
+        }
+      }
+    } else if(e.type==='rock'){
+      ctx.fillStyle = '#6b7280'; ctx.fillRect(e.x-10,e.y-6,20,12);
+      ctx.fillStyle = '#9ca3af'; ctx.fillRect(e.x-4,e.y-4,6,4);
+    } else if(e.type==='bush'){
+      ctx.fillStyle = '#16a34a'; ctx.fillRect(e.x-8,e.y-6,16,12);
+    } else if(e.type==='dino'){
+      drawDino(e.x,e.y);
+    } else if(e.type==='campfire'){
+      ctx.fillStyle = '#7c2d12'; ctx.fillRect(e.x-6,e.y-4,12,8);
+      if((e.fuel||0) > 0){
+        ctx.fillStyle = 'rgba(255,200,80,0.95)'; ctx.fillRect(e.x-4,e.y-12,8,8);
+      }
+    } else if(e.type==='wall'){
+      ctx.fillStyle = '#4b5563'; ctx.fillRect(e.x-16,e.y-16,32,32);
+    }
+    // small hp bar for mobs
+    if(e.type==='dino'){
+      ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(e.x-16,e.y-22,32,6);
+      const pct = clamp(e.hp/40,0,1);
+      ctx.fillStyle='#22c55e'; ctx.fillRect(e.x-16,e.y-22,32*pct,6);
+    }
+  }
+
+  // ground items
+  for(const it of groundItems){
+    if(it.type==='meat'){ ctx.fillStyle='#ef4444'; ctx.fillRect(it.x-4,it.y-4,8,8); ctx.fillStyle='#000'; ctx.fillRect(it.x+2,it.y-2,2,2); }
+    else { ctx.fillStyle='#f472b6'; ctx.fillRect(it.x-3,it.y-3,6,6); }
+  }
+
+  // player
+  drawPlayerSprite(player.x, player.y, 1.6, '#60a5fa', player.dir);
+
+  // floats
+  for(const f of floats){ ctx.fillStyle = f.color; ctx.font='12px sans-serif'; ctx.fillText(f.text, f.x, f.y); }
+
+  updateHUD();
+}
+
+// game loop
+function loop(){
+  updatePlayer();
+  updateEntities();
+  pickupNearby();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+
+// save on unload
+window.addEventListener('beforeunload', ()=> saveGame());
+
+// helper shading
+function shade(hex, percent){ const num = parseInt(hex.slice(1),16); let r=(num>>16)+percent,g=((num>>8)&0x00FF)+percent,b=(num&0x0000FF)+percent; r=Math.max(0,Math.min(255,r)); g=Math.max(0,Math.min(255,g)); b=Math.max(0,Math.min(255,b)); return '#'+(r<<16 | g<<8 | b).toString(16).padStart(6,'0'); }
+
+// initialize inventory & craft UI
+renderInventory();
+renderCraft();
+updateHUD();
+showToast('Selamat datang — mode Solo (Panah = gerak, E = interaksi)');
+
+// expose some dev helpers (optional)
+window.__ISLA = {player, ents, groundItems, addEnt, addGroundItem, spawnResources};
+
+</script>
+</body>
+</html>
